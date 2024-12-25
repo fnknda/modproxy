@@ -6,9 +6,11 @@ import "core:strings"
 import "core:sys/linux"
 import "core:path/filepath"
 
-start :: proc(dirname: string)
+start :: proc(dirname_ptr: rawptr)
 {
 	//TODO: Check modules already in directory
+
+	dirname := string(cstring(dirname_ptr))
 
 	in_fd, errno := linux.inotify_init()
 	assert(errno == .NONE)
@@ -52,10 +54,10 @@ start :: proc(dirname: string)
 			path := filepath.join({ dirname, name })
 
 			if .MOVED_TO in event.mask || .CLOSE_WRITE in event.mask {
-				modules.add(path)
+				modules.load(path)
 			}
 			else if .MOVED_FROM in event.mask || .DELETE in event.mask {
-				modules.remove(path)
+				modules.unload(path)
 			}
 
 			offset += size_of(linux.Inotify_Event) + int(event.len)

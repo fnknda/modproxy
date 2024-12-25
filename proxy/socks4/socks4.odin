@@ -5,7 +5,7 @@ Request:: struct #packed {
 	cmd: Command,
 	dstport: u16be,
 	dstip: [4]u8,
-	id: struct #raw_union { [4096 - 8 ]u8, cstring },
+	id: struct #raw_union { [4096 - 8]u8, cstring },
 }
 
 Command:: enum u8 {

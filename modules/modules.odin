@@ -24,14 +24,12 @@ Module :: struct {
 	on_receive: proc "c" (client: linux.Sock_Addr_In, remote: linux.Sock_Addr_In, data: []u8) -> []u8,
 }
 
-add_path :: proc(path: string)
+load_path :: proc(path: string)
 {
 	dl := posix.dlopen(strings.unsafe_string_to_cstring(path), {.NOW})
-	assert(dl != nil)
+	if dl == nil do return
 
-	fmt.println("open")
 	dl_get_priority := (proc "c" () -> int) (posix.dlsym(dl, "get_priority"))
-	fmt.println("sym")
 	assert(dl_get_priority != nil)
 
 	module := Module {
@@ -44,13 +42,11 @@ add_path :: proc(path: string)
 		on_receive = (proc "c" (client: linux.Sock_Addr_In, remote: linux.Sock_Addr_In, data: []u8) -> []u8)(posix.dlsym(dl, "on_receive")),
 	}
 
-	add_module(module)
+	load_module(module)
 }
 
-add_module :: proc(module: Module)
+load_module :: proc(module: Module)
 {
-	fmt.println("Adding module", module)
-
 	idx := 0
 	for mod in modules {
 		if mod.priority > module.priority {
@@ -59,18 +55,24 @@ add_module :: proc(module: Module)
 		idx += 1
 	}
 
+	fmt.println("Loading", module)
 	inject_at(&modules, idx, module)
 }
 
-add :: proc{add_path, add_module}
+load :: proc{load_path, load_module}
 
-remove_path :: proc(path: string)
+unload_path :: proc(path: string)
 {
-	fmt.println("Removing module", path)
-	//TODO: Implement module removal
+	for mod, idx in modules {
+		if mod.path == path {
+			fmt.println("Unloading", mod)
+			ordered_remove(&modules, idx)
+			break
+		}
+	}
 }
 
-remove :: proc{remove_path}
+unload :: proc{unload_path}
 
 run :: proc(op: Operation, client: linux.Sock_Addr_In, remote: linux.Sock_Addr_In, data: []u8) -> []u8
 {

@@ -1,54 +1,44 @@
 package proxy
 
-import "../modules"
 import "socks4"
+import "../modules"
 import "core:mem"
+import "core:fmt"
+import "core:thread"
 import "core:sys/linux"
 
-Protocol :: enum { Socks4, Socks5 }
-
-start_proxy :: proc(port: int = 1080, protocol: Protocol = .Socks4)
+handle_client:: proc(raw_client: rawptr)
 {
-	sock, errno := linux.socket(.INET, .STREAM, {}, .TCP)
-	assert(errno == .NONE)
-	defer linux.close(sock)
+	client := cast(linux.Fd)uintptr(raw_client)
+	defer linux.close(client)
 
-	sockaddr: linux.Sock_Addr_In
-	sockaddr.sin_family = .INET
-	sockaddr.sin_port = 1080
-	sockaddr.sin_addr = [4]u8{ 0, 0, 0, 0 }
-	errno = linux.bind(sock, &sockaddr)
-	assert(errno == .NONE)
+	fmt.println("File descriptor:", client)
 
-	errno = linux.listen(sock, 1)
-	assert(errno == .NONE)
-
-	//TODO: Loop on accept for more than one client
-	client: linux.Fd
 	client_addr: linux.Sock_Addr_Any
-	client, errno = linux.accept(sock, &client_addr, {})
-	assert(errno == .NONE)
 
 	request: socks4.Request
 	buffer := mem.ptr_to_bytes(&request)
-	bytes_read: int
-	bytes_read, errno = linux.recvfrom(client, buffer, {}, &client_addr)
+	bytes_read, errno := linux.recvfrom(client, buffer, {}, &client_addr)
 	assert(errno == .NONE)
 
-	//FIXME: Instead of throwing panic at any error. Handle them.
+	fmt.println("Attempting to connect,", request)
+
+	could_connect := true
+
 	remote: linux.Fd
 	remote, errno = linux.socket(.INET, .STREAM, {}, .TCP)
-	assert(errno == .NONE)
+	if errno != .NONE do could_connect = false
+	defer linux.close(remote)
 
 	remote_addr: linux.Sock_Addr_In
 	remote_addr.sin_family = .INET
 	remote_addr.sin_port = request.dstport
 	remote_addr.sin_addr = request.dstip
 	errno = linux.connect(remote, &remote_addr)
-	assert(errno == .NONE)
+	if errno != .NONE do could_connect = false
 
 	response: socks4.Response
-	if (request.cmd == .CONNECT) {
+	if could_connect && request.cmd == .CONNECT {
 		response = {
 			vn=0,
 			rep=.GRANT,
@@ -70,24 +60,27 @@ start_proxy :: proc(port: int = 1080, protocol: Protocol = .Socks4)
 	bytes_sent, errno = linux.sendto(client, buffer, {}, &client_addr)
 	assert(errno == .NONE)
 
-	//TODO: Multithread this
+	if response.rep == .REJECT do return
 
 	poll: linux.Fd
 	poll, errno = linux.epoll_create()
+	assert(errno == .NONE)
 
-	//FIXME: Error handling
 	events := linux.EPoll_Event{ events=.IN|.HUP }
 
 	events.data.fd = client
-	linux.epoll_ctl(poll, .ADD, client, &events)
+	errno = linux.epoll_ctl(poll, .ADD, client, &events)
+	assert(errno == .NONE)
 
 	events.data.fd = remote
-	linux.epoll_ctl(poll, .ADD, remote, &events)
+	errno = linux.epoll_ctl(poll, .ADD, remote, &events)
+	assert(errno == .NONE)
 
 	con_loop: for {
 		events := linux.EPoll_Event{}
 		num_events: i32
 		num_events, errno = linux.epoll_wait(poll, &events, 1, -1)
+		assert(errno == .NONE)
 
 		fd_in, fd_out: linux.Fd
 
@@ -98,9 +91,11 @@ start_proxy :: proc(port: int = 1080, protocol: Protocol = .Socks4)
 				#partial switch events.events {
 					case .IN:
 						bytes_read, errno = linux.recvfrom(client, buffer, {}, &addr)
+						assert(errno == .NONE)
 						if bytes_read > 0 {
 							buffer = modules.run(.Send, client_addr, remote_addr, buffer[:bytes_read])
 							bytes_sent, errno = linux.sendto(remote, buffer, {}, &remote_addr)
+							assert(errno == .NONE)
 							continue
 						}
 						fallthrough
@@ -111,9 +106,11 @@ start_proxy :: proc(port: int = 1080, protocol: Protocol = .Socks4)
 				#partial switch events.events {
 					case .IN:
 						bytes_read, errno = linux.recvfrom(remote, buffer, {}, &addr)
+						assert(errno == .NONE)
 						if bytes_read > 0 {
 							buffer = modules.run(.Receive, client_addr, remote_addr, buffer[:bytes_read])
 							bytes_sent, errno = linux.sendto(client, buffer, {}, &client_addr)
+							assert(errno == .NONE)
 							continue
 						}
 						fallthrough
@@ -122,7 +119,31 @@ start_proxy :: proc(port: int = 1080, protocol: Protocol = .Socks4)
 				}
 		}
 	}
+}
 
-	linux.close(client)
-	linux.close(remote)
+start :: proc(port: u16be = 1080)
+{
+	sock, errno := linux.socket(.INET, .STREAM, {}, .TCP)
+	assert(errno == .NONE)
+	defer linux.close(sock)
+
+	sockaddr: linux.Sock_Addr_In
+	sockaddr.sin_family = .INET
+	sockaddr.sin_port = port
+	sockaddr.sin_addr = [4]u8{ 0, 0, 0, 0 } //TODO: Allow changing where to bind to
+	errno = linux.bind(sock, &sockaddr)
+	assert(errno == .NONE)
+
+	errno = linux.listen(sock, 1)
+	assert(errno == .NONE)
+
+	fmt.println("Waiting for clients")
+	for {
+		client: linux.Fd
+		client_addr: linux.Sock_Addr_Any
+		client, errno = linux.accept(sock, &client_addr, {})
+		assert(errno == .NONE)
+
+		thread.create_and_start_with_data(transmute(rawptr)uintptr(client), handle_client)
+	}
 }
