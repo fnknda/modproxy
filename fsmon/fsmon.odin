@@ -42,7 +42,7 @@ start :: proc(dirname_ptr: rawptr)
 		num_events, errno = linux.epoll_wait(poll, &events, 1, -1)
 		assert(errno == .NONE)
 
-		buffer : [size_of(events) + linux.NAME_MAX + 1]u8 = ---
+		buffer : [size_of(events) + 255 + 1]u8 = --- //TODO: Replace 255 with linux.NAME_MAX when available
 		read_size: int
 		read_size, errno = linux.read(in_fd, buffer[:])
 		assert(errno == .NONE)

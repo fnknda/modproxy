@@ -131,7 +131,9 @@ start :: proc(port: u16be = 1080)
 	sockaddr.sin_family = .INET
 	sockaddr.sin_port = port
 	sockaddr.sin_addr = [4]u8{ 0, 0, 0, 0 } //TODO: Allow changing where to bind to
-	errno = linux.bind(sock, &sockaddr)
+	//errno = linux.bind(sock, &sockaddr)
+	ret := linux.syscall(linux.SYS_bind, sock, &sockaddr, 16) //TODO: Replace with call to linux.bind when https://github.com/odin-lang/Odin/pull/4613 gets merged
+	errno = linux.Errno(-ret)
 	assert(errno == .NONE)
 
 	errno = linux.listen(sock, 1)
